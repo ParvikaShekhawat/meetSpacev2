@@ -106,4 +106,89 @@ router.post("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, r
   }
 });
 
+router.post("/:id/start", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+
+    const interview = await prisma.interview.findFirst({
+      where: { id, position: { interviewerId: req.user!.id } },
+    });
+    if (!interview) {
+      return res.status(404).json({ error: "Interview not found" });
+    }
+    if (interview.status !== "SCHEDULED") {
+      return res.status(400).json({ error: `Cannot start an interview with status ${interview.status}` });
+    }
+
+    const startedAt = new Date();
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedInterview = await tx.interview.update({
+        where: { id },
+        data: { status: "IN_PROGRESS", startedAt },
+      });
+
+      await tx.interviewEvent.create({
+        data: {
+          interviewId: id,
+          timestampMs: 0,
+          type: "INTERVIEW_STARTED",
+          payload: { startedAt: startedAt.toISOString() },
+        },
+      });
+
+      return updatedInterview;
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    console.error("Failed to start interview:", e);
+    return res.status(500).json({ error: "Failed to start interview" });
+  }
+});
+
+router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+
+    const interview = await prisma.interview.findFirst({
+      where: { id, position: { interviewerId: req.user!.id } },
+    });
+    if (!interview) {
+      return res.status(404).json({ error: "Interview not found" });
+    }
+    if (interview.status !== "IN_PROGRESS") {
+      return res.status(400).json({ error: `Cannot end an interview with status ${interview.status}` });
+    }
+
+    const endedAt = new Date();
+    const timestampMs = interview.startedAt
+      ? endedAt.getTime() - interview.startedAt.getTime()
+      : 0;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedInterview = await tx.interview.update({
+        where: { id },
+        data: { status: "COMPLETED", endedAt },
+      });
+
+      await tx.interviewEvent.create({
+        data: {
+          interviewId: id,
+          timestampMs,
+          type: "INTERVIEW_ENDED",
+          payload: { endedAt: endedAt.toISOString() },
+        },
+      });
+
+      return updatedInterview;
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    console.error("Failed to end interview:", e);
+    return res.status(500).json({ error: "Failed to end interview" });
+  }
+});
+
 export default router;

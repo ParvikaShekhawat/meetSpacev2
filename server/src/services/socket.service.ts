@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from "http";
 import { Server as SocketIOServer, type Socket } from "socket.io";
-import { Prisma } from "@prisma/client";               // NEW
+import { Prisma } from "@prisma/client";
 import { COOKIE_NAME, verifySession, type SessionUser } from "../lib/auth";
 import { prisma } from "../lib/prisma";
 import { config } from "../config/env";
@@ -16,6 +16,7 @@ interface RoomData {
   participants: Map<string, Participant>;
   state: Record<string, unknown>;
   hydrated: boolean;
+  startedAt: number;
 }
 
 interface SocketRoomData {
@@ -33,14 +34,16 @@ const pendingWrites = new Map<string, NodeJS.Timeout>();
 
 function getRoom(interviewId: string): RoomData {
   if (!rooms.has(interviewId)) {
-    rooms.set(interviewId, { participants: new Map(), state: {}, hydrated: false });
+    rooms.set(interviewId, {
+      participants: new Map(),
+      state: {},
+      hydrated: false,
+      startedAt: Date.now(),
+    });
   }
   return rooms.get(interviewId)!;
 }
 
-// Loads any previously-saved room state (code/workspace per question) from
-// the DB into the in-memory room, so a server restart mid-interview doesn't
-// wipe live progress. Only runs once per room's lifetime in memory.
 async function hydrateRoomFromDb(interviewId: string, room: RoomData) {
   if (room.hydrated) return;
   room.hydrated = true;
@@ -69,9 +72,6 @@ async function hydrateRoomFromDb(interviewId: string, room: RoomData) {
   }
 }
 
-// Debounces writes to the RoomState table per (interview, question) pair so
-// we don't hit the DB on every keystroke, while still persisting regularly
-// enough that a crash loses at most a few seconds of work.
 function scheduleRoomStateWrite(
   interviewId: string,
   questionId: string,
@@ -85,7 +85,7 @@ function scheduleRoomStateWrite(
   const timer = setTimeout(async () => {
     pendingWrites.delete(key);
     try {
-            await prisma.roomState.upsert({
+      await prisma.roomState.upsert({
         where: { interviewId_questionId: { interviewId, questionId } },
         create: {
           interviewId,
@@ -117,6 +117,30 @@ function scheduleRoomStateWrite(
   pendingWrites.set(key, timer);
 }
 
+// timestampMs = ms ELAPSED SINCE ROOM STARTED (schema column is 32-bit Int;
+// a raw Date.now() epoch value overflows it).
+async function persistInterviewEvent(
+  interviewId: string,
+  type: string,
+  timestampMs: number,
+  payload: Record<string, unknown>,
+  questionId?: string
+) {
+  try {
+    await prisma.interviewEvent.create({
+      data: {
+        interviewId,
+        questionId: questionId ?? null,
+        type: type as any,
+        timestampMs,
+        payload: payload as Prisma.InputJsonValue,
+      },
+    });
+  } catch (err) {
+    console.error(`Failed to persist event ${type} for interview ${interviewId}:`, err);
+  }
+}
+
 function getSocketRoomData(socket: Socket): SocketRoomData {
   return socket.data as SocketRoomData;
 }
@@ -146,7 +170,6 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
     transports: ["websocket", "polling"],
   });
 
-  // Auth runs once per connection, before any events are accepted.
   io.use(async (socket, next) => {
     try {
       const session = await getSessionFromSocket(socket);
@@ -203,14 +226,12 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
 
       room.participants.set(userId, { userId, userName, role, socketId: socket.id });
 
-      // Send the joining client the current state and who's already here.
       socket.emit("room-state", { ...room.state });
       const others = Array.from(room.participants.values()).filter(
         (participant) => participant.socketId !== socket.id
       );
       socket.emit("participants-list", others);
 
-      // Tell everyone else in the room someone new joined.
       socket.to(interviewId).emit("user-joined", { userId, userName, role, socketId: socket.id });
     });
 
@@ -247,13 +268,51 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       });
     });
 
+    socket.on("record-event", ({ type, questionId, payload }) => {
+      const { interviewId, userId } = getSocketRoomData(socket);
+      if (!interviewId || !userId || !type) return;
+
+      const allowedTypes = ["HINT", "FLAG", "NOTE", "TRANSCRIPT", "SQL_QUERY"];
+      if (!allowedTypes.includes(type)) return;
+
+      const room = getRoom(interviewId);
+      const fullPayload = { ...(payload ?? {}), userId };
+
+      persistInterviewEvent(interviewId, type, Date.now() - room.startedAt, fullPayload, questionId);
+
+      socket.to(interviewId).emit("event-recorded", { type, questionId, payload: fullPayload });
+    });
+
     socket.on("question-switch", ({ questionIdx, questionId, title }) => {
       const data = getSocketRoomData(socket);
       if (!data.interviewId || !data.isInterviewer) return;
 
       const room = getRoom(data.interviewId);
+      const previousQuestion = room.state.activeQuestion as
+        | { questionIdx: number; questionId: string; title: string; ts: number }
+        | undefined;
+
       room.state.activeQuestion = { questionIdx, questionId, title, ts: Date.now() };
       socket.to(data.interviewId).emit("question-switch", { questionIdx, questionId, title });
+
+      persistInterviewEvent(
+        data.interviewId,
+        "QUESTION_STARTED",
+        Date.now() - room.startedAt,
+        { questionIdx, title },
+        questionId
+      );
+
+      if (previousQuestion) {
+        const finalCode = room.state[`code-${previousQuestion.questionId}`];
+        persistInterviewEvent(
+          data.interviewId,
+          "QUESTION_ENDED",
+          Date.now() - room.startedAt,
+          { title: previousQuestion.title, finalState: finalCode ?? null },
+          previousQuestion.questionId
+        );
+      }
     });
 
     socket.on("disconnect", () => {
