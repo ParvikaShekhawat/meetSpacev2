@@ -2,8 +2,15 @@ import { Router, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, requireRole, AuthenticatedRequest } from "../middleware/auth.middleware";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import { sendCandidateCredentials } from "../services/email.service";
 
 const router = Router();
+
+function generateTempPassword(): string {
+  return crypto.randomBytes(9).toString("base64url"); // 12-char, URL-safe
+}
 
 router.use(authenticate);
 
@@ -47,10 +54,35 @@ router.post("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, r
       return res.status(404).json({ error: "Position not found" });
     }
 
-    const candidate = await prisma.candidate.create({
-      data: { name, email, resumeUrl: resumeUrl ?? null, positionId },
-      include: { position: { select: { title: true } } },
+    let tempPassword: string | null = null;
+    const candidate = await prisma.$transaction(async (tx) => {
+      let userId: string | null = null;
+      const existingUser = await tx.user.findUnique({ where: { email } });
+      if (existingUser) {
+        userId = existingUser.id;
+      } else {
+        tempPassword = generateTempPassword();
+        const hashed = await bcrypt.hash(tempPassword, 10);
+        const newUser = await tx.user.create({
+          data: { email, password: hashed, name, role: "CANDIDATE" },
+        });
+        userId = newUser.id;
+      }
+      return tx.candidate.create({
+        data: { name, email, resumeUrl: resumeUrl ?? null, positionId, userId },
+        include: { position: { select: { title: true } } },
+      });
     });
+
+    if (tempPassword) {
+      sendCandidateCredentials({
+        to: email,
+        candidateName: name,
+        email,
+        temporaryPassword: tempPassword,
+        positionTitle: candidate.position.title,
+      }).catch((e) => console.error("Credentials email failed:", e));
+    }
 
     return res.status(201).json(candidate);
   } catch (e) {
