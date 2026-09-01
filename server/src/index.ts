@@ -9,6 +9,7 @@ import cookieParser from 'cookie-parser';
 import { config } from './config/env';
 import authRoutes from './routes/auth.routes';
 import interviewRoutes from './routes/interview.routes';
+import livekitRoutes from './routes/livekit.routes';
 import { initSocketServer } from './services/socket.service'; // NEW
 
 dotenv.config();
@@ -29,6 +30,7 @@ app.use('/api/candidates', candidateRoutes);
 app.use('/api/questions', questionRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/interviews', interviewRoutes);
+app.use('/api/livekit', livekitRoutes);
 
 const httpServer = createServer(app);        // NEW - wraps express app
 initSocketServer(httpServer);                 // NEW - attaches socket.io
