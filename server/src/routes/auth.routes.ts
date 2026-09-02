@@ -4,6 +4,8 @@ import { prisma } from "../lib/prisma";
 import { createSession, setSessionCookie, clearSessionCookie, COOKIE_NAME, verifySession } from "../lib/auth";
 import { checkRateLimit, getClientIp } from "../lib/rate-limit";
 import { config } from "../config/env";
+import { generateVerificationToken, getVerificationTokenExpiry } from "../lib/utils";
+import { sendVerificationEmail } from "../services/email.service";
 
 const router = Router();
 
@@ -13,12 +15,13 @@ const MAX_NAME_LENGTH = 100;
 const DUMMY_HASH = "$2a$10$CwTycUXWue0Thq9StjUM0uJ8aXfrsxmMDpKA6VjRvzZO2jY2vJm6a";
 
 // Self-registration policy:
-// - CANDIDATE: fully open, no gate (matches candidate.routes.ts auto-creation flow).
-// - INTERVIEWER: requires a shared invite code (config.interviewerInviteCode) to
-//   prevent anyone from self-granting interviewer privileges. If that code is
-//   unset in production, interviewer self-signup is disabled entirely.
-// Neither path verifies email ownership yet — see candidate email verification
-// gap tracked separately.
+// - CANDIDATE: open signup, but the account starts unverified (emailVerified: false).
+//   A verification email is sent; unverified candidates can log in and browse but
+//   are blocked from joining an interview or running code until verified (see
+//   livekit.routes.ts / code.routes.ts).
+// - INTERVIEWER: requires a shared invite code (config.interviewerInviteCode).
+//   Interviewer accounts are NOT subject to email verification — the invite code
+//   is the gate for that role.
 
 router.post("/register", async (req: Request, res: Response) => {
   try {
@@ -73,20 +76,32 @@ router.post("/register", async (req: Request, res: Response) => {
         password: hashed,
         name,
         role,
+        emailVerified: role === "INTERVIEWER", // interviewers skip email verification
       },
     });
 
-    const token = await createSession({
+    if (role === "CANDIDATE") {
+      const token = generateVerificationToken();
+      await prisma.emailVerificationToken.create({
+        data: { token, userId: user.id, expiresAt: getVerificationTokenExpiry() },
+      });
+      sendVerificationEmail({ to: user.email, candidateName: user.name, token }).catch((e) =>
+        console.error("Failed to send verification email:", e)
+      );
+    }
+
+    const sessionToken = await createSession({
       id: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
+      emailVerified: user.emailVerified,
     });
 
-    setSessionCookie(res, token);
+    setSessionCookie(res, sessionToken);
     return res.json({
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
-      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: user.emailVerified },
+      token: sessionToken,
     });
   } catch (error) {
     console.error("Registration failed:", error);
@@ -127,16 +142,45 @@ router.post("/login", async (req: Request, res: Response) => {
       email: user.email,
       name: user.name,
       role: user.role,
+      emailVerified: user.emailVerified,
     });
 
     setSessionCookie(res, token);
     return res.json({
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: user.emailVerified },
       token,
     });
   } catch (error) {
     console.error("Login failed:", error);
     return res.status(500).json({ error: "Login failed" });
+  }
+});
+
+router.post("/verify-email", async (req: Request, res: Response) => {
+  try {
+    const token = req.body.token as string | undefined;
+    if (!token) {
+      return res.status(400).json({ error: "Token is required" });
+    }
+
+    const record = await prisma.emailVerificationToken.findUnique({ where: { token } });
+    if (!record) {
+      return res.status(400).json({ error: "Invalid or expired verification link" });
+    }
+    if (record.expiresAt < new Date()) {
+      await prisma.emailVerificationToken.delete({ where: { token } });
+      return res.status(400).json({ error: "Verification link has expired" });
+    }
+
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: record.userId }, data: { emailVerified: true } }),
+      prisma.emailVerificationToken.deleteMany({ where: { userId: record.userId } }),
+    ]);
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Email verification failed:", error);
+    return res.status(500).json({ error: "Verification failed" });
   }
 });
 
