@@ -3,7 +3,7 @@ import { Router, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { authenticate, AuthenticatedRequest } from "../middleware/auth.middleware";
 import { executeViaPiston, SUPPORTED_LANGUAGES, LanguageId } from "../services/piston.service";
-import { runMultiLanguageTests, QuestionTestConfig } from "../services/piston-test-runner.service";
+import { runMultiLanguageTests, parseTestConfig } from "../services/piston-test-runner.service";
 
 const router = Router();
 
@@ -112,10 +112,13 @@ router.post("/test", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ error: "Question not found" });
     }
 
-    const testConfig = (question.metadata as unknown as QuestionTestConfig | null) ?? null;
+    const { config: testConfig, error: configError } = parseTestConfig(question.metadata);
+if (configError) {
+  return res.status(400).json({ error: `This question's test configuration is invalid: ${configError}` });
+}
 
-    const result = await runMultiLanguageTests(code, language, testConfig);
-    return res.json(result);
+const result = await runMultiLanguageTests(code, language, testConfig);
+return res.json(result);
   } catch (e) {
     console.error("Failed to run tests:", e);
     return res.status(500).json({ error: "Failed to run tests" });
