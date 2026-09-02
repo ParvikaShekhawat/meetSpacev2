@@ -53,12 +53,14 @@ model User {
   password  String
   name      String
   role      UserRole
+  emailVerified Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   positions         Position[]
   candidateProfiles Candidate[]
   questions         Question[]
+  verificationTokens EmailVerificationToken[]
 }
 
 model Position {
@@ -232,4 +234,16 @@ model RoomState {
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
 
   @@unique([interviewId, questionId])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
