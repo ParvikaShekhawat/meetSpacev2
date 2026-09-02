@@ -11,6 +11,7 @@ import authRoutes from './routes/auth.routes';
 import interviewRoutes from './routes/interview.routes';
 import livekitRoutes from './routes/livekit.routes';
 import { initSocketServer } from './services/socket.service'; // NEW
+import codeRoutes from './routes/code.routes';
 
 dotenv.config();
 
@@ -20,6 +21,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
+app.use('/api/code', codeRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'MeetSpace server is alive' });
