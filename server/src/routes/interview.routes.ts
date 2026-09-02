@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { generateInterviewCode } from "../lib/interview-code";
 import { authenticate, requireRole, AuthenticatedRequest } from "../middleware/auth.middleware";
+import { generateReportWithAI } from "../services/openai.service";
 
 const router = Router();
 
@@ -9,6 +10,22 @@ const MIN_DURATION_MINS = 15;
 const MAX_DURATION_MINS = 240;
 
 router.use(authenticate);
+
+async function getInterviewAccess(interviewId: string, userId: string) {
+  const interview = await prisma.interview.findUnique({
+    where: { id: interviewId },
+    include: { position: true, candidate: true },
+  });
+
+  if (!interview) {
+    return { interview: null, isInterviewer: false, isCandidate: false, hasAccess: false };
+  }
+
+  const isInterviewer = interview.position.interviewerId === userId;
+  const isCandidate = interview.candidate.userId === userId;
+
+  return { interview, isInterviewer, isCandidate, hasAccess: isInterviewer || isCandidate };
+}
 
 router.get("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -106,6 +123,176 @@ router.post("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, r
   }
 });
 
+router.get("/:id", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const user = req.user!;
+
+    const interview = await prisma.interview.findUnique({
+      where: { id },
+      include: {
+        candidate: true,
+        position: true,
+        questions: {
+          include: { question: true },
+          orderBy: { order: "asc" },
+        },
+        events: { orderBy: { timestampMs: "asc" } },
+        report: true,
+      },
+    });
+
+    if (!interview) {
+      return res.status(404).json({ error: "Interview not found" });
+    }
+
+    const isInterviewer = interview.position.interviewerId === user.id;
+    const isCandidate = interview.candidate.userId === user.id;
+
+    if (!isInterviewer && !isCandidate) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (isInterviewer) {
+      return res.json(interview);
+    }
+
+    // Candidates never see interviewer-private notes/decisions.
+    const iv = interview as any;
+    return res.json({
+      ...iv,
+      questions: iv.questions.map((iq: any) => ({ ...iq, notes: null })),
+      report: iv.report
+        ? { ...iv.report, interviewerNotes: null, interviewerDecision: null, finalComments: null }
+        : null,
+    });
+  } catch (e) {
+    console.error("Failed to fetch interview:", e);
+    return res.status(500).json({ error: "Failed to fetch interview" });
+  }
+});
+
+router.get("/:id/events", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { hasAccess } = await getInterviewAccess(id, req.user!.id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const events = await prisma.interviewEvent.findMany({
+      where: { interviewId: id },
+      orderBy: { timestampMs: "asc" },
+    });
+    return res.json(events);
+  } catch (e) {
+    console.error("Failed to fetch events:", e);
+    return res.status(500).json({ error: "Failed to fetch events" });
+  }
+});
+
+router.get("/:id/report", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const user = req.user!;
+
+    const interview = await prisma.interview.findUnique({
+      where: { id },
+      include: {
+        candidate: true,
+        position: true,
+        questions: { include: { question: true }, orderBy: { order: "asc" } },
+        events: { orderBy: { timestampMs: "asc" } },
+        report: true,
+      },
+    });
+
+    if (!interview || !interview.report) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+
+    const isInterviewer = interview.position.interviewerId === user.id;
+    const isCandidate = interview.candidate.userId === user.id;
+    if (!isInterviewer && !isCandidate) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const iv = interview as any;
+    const report = {
+      id: iv.id,
+      code: iv.code,
+      candidateName: iv.candidate.name,
+      positionTitle: iv.position.title,
+      scheduledAt: iv.scheduledAt.toISOString(),
+      durationMins: iv.durationMins,
+      overallScore: iv.report.overallScore,
+      aiSummary: iv.report.aiSummary,
+      strengths: iv.report.strengths,
+      weaknesses: iv.report.weaknesses,
+      recommendation: iv.report.aiRecommendation,
+      interviewerNotes: isInterviewer ? iv.report.interviewerNotes : null,
+      interviewerDecision: isInterviewer ? iv.report.interviewerDecision : null,
+      finalComments: isInterviewer ? iv.report.finalComments : null,
+      questionsSolved: iv.report.questionsSolved,
+      hintsUsed: iv.report.hintsUsed,
+      questionsAsked: iv.questions.length,
+      competencyScores: iv.report.competencyScores ?? [],
+      learningPlan: iv.report.learningPlanData ?? [],
+      candidateBetterApproach: isCandidate ? iv.report.candidateBetterApproach : null,
+      aiGenerated: iv.report.aiGenerated,
+      questions: iv.questions.map((iq: any) => ({
+        id: iq.id,
+        questionRefId: iq.questionId,
+        title: iq.question.title,
+        type: iq.question.type,
+        difficulty: iq.question.difficulty,
+        statement: iq.question.statement,
+        finalCode: iq.finalCode,
+        notes: isInterviewer ? iq.notes : null,
+      })),
+      events: iv.events.map((e: any) => ({
+        id: e.id,
+        timestampMs: e.timestampMs,
+        type: e.type,
+        payload: e.payload || {},
+      })),
+      role: user.role,
+    };
+
+    return res.json(report);
+  } catch (e) {
+    console.error("Failed to fetch report:", e);
+    return res.status(500).json({ error: "Failed to fetch report" });
+  }
+});
+
+router.patch("/:id/report", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const user = req.user!;
+
+    const interview = await prisma.interview.findUnique({
+      where: { id },
+      include: { position: true },
+    });
+
+    if (!interview || interview.position.interviewerId !== user.id) {
+      return res.status(404).json({ error: "Not found or forbidden" });
+    }
+
+    const { interviewerDecision, finalComments, interviewerNotes } = req.body;
+    const report = await prisma.interviewReport.update({
+      where: { interviewId: id },
+      data: { interviewerDecision, finalComments, interviewerNotes },
+    });
+
+    return res.json(report);
+  } catch (e) {
+    console.error("Failed to update report:", e);
+    return res.status(500).json({ error: "Failed to update report" });
+  }
+});
+
 router.post("/:id/start", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const id = req.params.id as string;
@@ -153,6 +340,7 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
 
     const interview = await prisma.interview.findFirst({
       where: { id, position: { interviewerId: req.user!.id } },
+      include: { candidate: true, position: true },
     });
     if (!interview) {
       return res.status(404).json({ error: "Interview not found" });
@@ -165,6 +353,46 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
     const timestampMs = interview.startedAt
       ? endedAt.getTime() - interview.startedAt.getTime()
       : 0;
+
+    // Snapshot final code from RoomState into InterviewQuestion before generating the report,
+    // so the report reflects what was actually on screen when the interview ended.
+    const roomStates = await prisma.roomState.findMany({ where: { interviewId: id } });
+    for (const state of roomStates) {
+      await prisma.interviewQuestion.updateMany({
+        where: { interviewId: id, questionId: state.questionId },
+        data: {
+          finalCode: state.code ?? undefined,
+          workspaceData: state.workspaceData ?? undefined,
+        },
+      });
+    }
+
+    const refreshedQuestions = await prisma.interviewQuestion.findMany({
+      where: { interviewId: id },
+      include: { question: true },
+    });
+    const events = await prisma.interviewEvent.findMany({ where: { interviewId: id } });
+
+    let analysis: Awaited<ReturnType<typeof generateReportWithAI>> | null = null;
+    try {
+      analysis = await generateReportWithAI({
+        candidateName: interview.candidate.name,
+        positionTitle: interview.position.title,
+        durationMins: interview.durationMins,
+        events: events.map((e) => ({
+          type: e.type,
+          timestampMs: e.timestampMs,
+          payload: (e.payload as Record<string, string>) ?? {},
+        })),
+        questions: refreshedQuestions.map((q) => ({
+          title: q.question.title,
+          type: q.question.type,
+          finalCode: q.finalCode,
+        })),
+      });
+    } catch (aiError) {
+      console.error("AI report generation failed, ending interview without report:", aiError);
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const updatedInterview = await tx.interview.update({
@@ -180,6 +408,42 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
           payload: { endedAt: endedAt.toISOString() },
         },
       });
+
+      if (analysis) {
+        await tx.interviewReport.upsert({
+          where: { interviewId: id },
+          create: {
+            interviewId: id,
+            questionsAsked: refreshedQuestions.length,
+            overallScore: analysis.overallScore,
+            questionsSolved: analysis.questionsSolved,
+            hintsUsed: analysis.hintsUsed,
+            aiSummary: analysis.aiSummary,
+            strengths: analysis.strengths,
+            weaknesses: analysis.weaknesses,
+            aiRecommendation: analysis.recommendation,
+            competencyScores: analysis.competencyScores,
+            learningPlanData: analysis.learningPlan,
+            candidateBetterApproach: analysis.candidateBetterApproach,
+            aiGenerated: analysis.aiGenerated,
+            interviewerNotes: "",
+          },
+          update: {
+            questionsAsked: refreshedQuestions.length,
+            overallScore: analysis.overallScore,
+            questionsSolved: analysis.questionsSolved,
+            hintsUsed: analysis.hintsUsed,
+            aiSummary: analysis.aiSummary,
+            strengths: analysis.strengths,
+            weaknesses: analysis.weaknesses,
+            aiRecommendation: analysis.recommendation,
+            competencyScores: analysis.competencyScores,
+            learningPlanData: analysis.learningPlan,
+            candidateBetterApproach: analysis.candidateBetterApproach,
+            aiGenerated: analysis.aiGenerated,
+          },
+        });
+      }
 
       return updatedInterview;
     });
