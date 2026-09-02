@@ -4,7 +4,8 @@ import { prisma } from "../lib/prisma";
 import { authenticate, requireRole, AuthenticatedRequest } from "../middleware/auth.middleware";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { sendCandidateCredentials } from "../services/email.service";
+import { sendCandidateCredentials, sendVerificationEmail } from "../services/email.service";
+import { generateVerificationToken, getVerificationTokenExpiry } from "../lib/utils";
 
 const router = Router();
 
@@ -55,6 +56,9 @@ router.post("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, r
     }
 
     let tempPassword: string | null = null;
+    let newlyCreatedUserId: string | null = null;
+    let verificationToken: string | null = null;
+
     const candidate = await prisma.$transaction(async (tx) => {
       let userId: string | null = null;
       const existingUser = await tx.user.findUnique({ where: { email } });
@@ -64,9 +68,15 @@ router.post("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, r
         tempPassword = generateTempPassword();
         const hashed = await bcrypt.hash(tempPassword, 10);
         const newUser = await tx.user.create({
-          data: { email, password: hashed, name, role: "CANDIDATE" },
+          data: { email, password: hashed, name, role: "CANDIDATE", emailVerified: false },
         });
         userId = newUser.id;
+        newlyCreatedUserId = newUser.id;
+
+        verificationToken = generateVerificationToken();
+        await tx.emailVerificationToken.create({
+          data: { token: verificationToken, userId: newUser.id, expiresAt: getVerificationTokenExpiry() },
+        });
       }
       return tx.candidate.create({
         data: { name, email, resumeUrl: resumeUrl ?? null, positionId, userId },
@@ -82,6 +92,14 @@ router.post("/", requireRole("INTERVIEWER"), async (req: AuthenticatedRequest, r
         temporaryPassword: tempPassword,
         positionTitle: candidate.position.title,
       }).catch((e) => console.error("Credentials email failed:", e));
+    }
+
+    if (newlyCreatedUserId && verificationToken) {
+      sendVerificationEmail({
+        to: email,
+        candidateName: name,
+        token: verificationToken,
+      }).catch((e) => console.error("Verification email failed:", e));
     }
 
     return res.status(201).json(candidate);
