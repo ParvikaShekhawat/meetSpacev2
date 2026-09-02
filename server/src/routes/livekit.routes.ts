@@ -35,6 +35,10 @@ router.get("/:interviewId/token", async (req: AuthenticatedRequest, res: Respons
       return res.status(403).json({ error: "Not authorized for this interview" });
     }
 
+    if (isCandidate && !req.user!.emailVerified) {
+      return res.status(403).json({ error: "Please verify your email before joining an interview" });
+    }
+
     if (interview.status !== "IN_PROGRESS" && interview.status !== "SCHEDULED") {
       return res.status(400).json({ error: `Cannot join an interview with status ${interview.status}` });
     }

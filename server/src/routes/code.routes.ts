@@ -21,12 +21,12 @@ async function checkInterviewAccess(interviewId: string, userId: string) {
     },
   });
 
-  if (!interview) return { interview: null, authorized: false };
+  if (!interview) return { interview: null, authorized: false, isCandidate: false };
 
   const isInterviewer = interview.position.interviewerId === userId;
   const isCandidate = interview.candidate.userId === userId;
 
-  return { interview, authorized: isInterviewer || isCandidate };
+  return { interview, authorized: isInterviewer || isCandidate, isCandidate };
 }
 
 function isValidLanguage(language: unknown): language is LanguageId {
@@ -50,12 +50,15 @@ router.post("/run", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: `stdin must be a string under ${MAX_STDIN_LENGTH} characters` });
     }
 
-    const { interview, authorized } = await checkInterviewAccess(interviewId, req.user!.id);
+        const { interview, authorized, isCandidate } = await checkInterviewAccess(interviewId, req.user!.id);
     if (!interview) {
       return res.status(404).json({ error: "Interview not found" });
     }
     if (!authorized) {
       return res.status(403).json({ error: "Not authorized for this interview" });
+    }
+    if (isCandidate && !req.user!.emailVerified) {
+      return res.status(403).json({ error: "Please verify your email before running code" });
     }
     if (interview.status !== "IN_PROGRESS") {
       return res.status(400).json({ error: `Cannot run code for an interview with status ${interview.status}` });
@@ -85,12 +88,15 @@ router.post("/test", async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const { interview, authorized } = await checkInterviewAccess(interviewId, req.user!.id);
+        const { interview, authorized, isCandidate } = await checkInterviewAccess(interviewId, req.user!.id);
     if (!interview) {
       return res.status(404).json({ error: "Interview not found" });
     }
     if (!authorized) {
       return res.status(403).json({ error: "Not authorized for this interview" });
+    }
+    if (isCandidate && !req.user!.emailVerified) {
+      return res.status(403).json({ error: "Please verify your email before running code" });
     }
     if (interview.status !== "IN_PROGRESS") {
       return res.status(400).json({ error: `Cannot run tests for an interview with status ${interview.status}` });
