@@ -3,26 +3,22 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma";
 import { createSession, setSessionCookie, clearSessionCookie, COOKIE_NAME, verifySession } from "../lib/auth";
 import { checkRateLimit, getClientIp } from "../lib/rate-limit";
+import { config } from "../config/env";
 
 const router = Router();
 
 const MAX_PASSWORD_LENGTH = 128;
 const MAX_NAME_LENGTH = 100;
 
-// A precomputed bcrypt hash of a random, unused value — never matches any
-// real password. Used to keep bcrypt.compare's timing constant whether or
-// not the requested email exists, so login can't be used to enumerate
-// registered emails by response time.
 const DUMMY_HASH = "$2a$10$CwTycUXWue0Thq9StjUM0uJ8aXfrsxmMDpKA6VjRvzZO2jY2vJm6a";
 
-// NOTE: public self-registration is enabled here by choice. This means
-// anyone can create a CANDIDATE account with any email address, with no
-// proof they own it. Combined with candidate.routes.ts (which attaches a
-// new Candidate record to an existing User if one already exists for that
-// email), someone could pre-register a victim's email and later gain
-// access to an interview scheduled for that address by an interviewer.
-// If that risk matters for your use case, the fix is email verification
-// before an account is usable — flag it whenever you want to tackle it.
+// Self-registration policy:
+// - CANDIDATE: fully open, no gate (matches candidate.routes.ts auto-creation flow).
+// - INTERVIEWER: requires a shared invite code (config.interviewerInviteCode) to
+//   prevent anyone from self-granting interviewer privileges. If that code is
+//   unset in production, interviewer self-signup is disabled entirely.
+// Neither path verifies email ownership yet — see candidate email verification
+// gap tracked separately.
 
 router.post("/register", async (req: Request, res: Response) => {
   try {
@@ -37,6 +33,8 @@ router.post("/register", async (req: Request, res: Response) => {
     const email = (req.body.email as string | undefined)?.trim().toLowerCase();
     const password = req.body.password as string | undefined;
     const name = (req.body.name as string | undefined)?.trim();
+    const roleInput = (req.body.role as string | undefined)?.trim().toUpperCase();
+    const inviteCode = req.body.inviteCode as string | undefined;
 
     if (!email || !password || !name) {
       return res.status(400).json({ error: "Name, email, and password are required" });
@@ -51,6 +49,18 @@ router.post("/register", async (req: Request, res: Response) => {
       return res.status(400).json({ error: `Name must be ${MAX_NAME_LENGTH} characters or fewer` });
     }
 
+    let role: "CANDIDATE" | "INTERVIEWER" = "CANDIDATE";
+
+    if (roleInput === "INTERVIEWER") {
+      if (!config.interviewerInviteCode) {
+        return res.status(403).json({ error: "Interviewer signup is currently disabled" });
+      }
+      if (inviteCode !== config.interviewerInviteCode) {
+        return res.status(403).json({ error: "Invalid invite code" });
+      }
+      role = "INTERVIEWER";
+    }
+
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       return res.status(409).json({ error: "Email already registered" });
@@ -62,7 +72,7 @@ router.post("/register", async (req: Request, res: Response) => {
         email,
         password: hashed,
         name,
-        role: "CANDIDATE",
+        role,
       },
     });
 
@@ -106,9 +116,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const user = await prisma.user.findUnique({ where: { email } });
 
-    // Always run bcrypt.compare, even if no user was found, so a request
-    // for a nonexistent email takes the same amount of time as one for a
-    // real email with a wrong password.
     const passwordMatches = await bcrypt.compare(password, user?.password ?? DUMMY_HASH);
 
     if (!user || !passwordMatches) {

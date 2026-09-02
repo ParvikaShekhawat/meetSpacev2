@@ -38,6 +38,7 @@ export const config = {
   clientUrl: (process.env.CLIENT_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5173").replace(/\/$/, ""),
   jwtSecret: getJwtSecret(),
   pistonUrl: process.env.PISTON_URL || "https://emkc.org/api/v2/piston/execute",
+  interviewerInviteCode: process.env.INTERVIEWER_INVITE_CODE || "",
   livekit: {
     apiKey: process.env.LIVEKIT_API_KEY || "",
     apiSecret: process.env.LIVEKIT_API_SECRET || "",
