@@ -53,8 +53,6 @@ export async function sendCandidateCredentials(params: {
   positionTitle: string;
 }) {
   if (isMockMode) {
-    // Password is only ever logged outside production, as a safety net —
-    // this should never run in prod since env.ts requires full SMTP config there.
     if (process.env.NODE_ENV !== "production") {
       console.log(`[Email Mock] Credentials to ${params.to}: Temp password: ${params.temporaryPassword}`);
     } else {
@@ -78,5 +76,35 @@ export async function sendCandidateCredentials(params: {
     });
   } catch (err) {
     console.error("Failed to send credentials email:", err);
+  }
+}
+
+export async function sendVerificationEmail(params: {
+  to: string;
+  candidateName: string;
+  token: string;
+}) {
+  const verifyUrl = `${config.clientUrl}/verify-email?token=${params.token}`;
+
+  if (isMockMode) {
+    console.log(`[Email Mock] Verification link for ${params.to}: ${verifyUrl}`);
+    return;
+  }
+
+  try {
+    await transporter.sendMail({
+      from: `"MeetSpace" <${config.smtp.from}>`,
+      to: params.to,
+      subject: `Verify your MeetSpace email`,
+      html: `
+        <h2>Verify your email</h2>
+        <p>Hi ${params.candidateName},</p>
+        <p>Please confirm this email address belongs to you before joining an interview on MeetSpace.</p>
+        <p><a href="${verifyUrl}">Click here to verify your email</a></p>
+        <p>This link expires in 24 hours.</p>
+      `,
+    });
+  } catch (err) {
+    console.error("Failed to send verification email:", err);
   }
 }
