@@ -1,14 +1,24 @@
+import { z } from "zod";
 import { executeViaPiston, LanguageId } from "./piston.service";
 
-export interface TestCase {
-  input: Partial<Record<LanguageId, string>>; // bare call expression per language, e.g. "twoSum([2,7,11,15], 9)"
-  expected: string;
-}
+export const testCaseSchema = z.object({
+  input: z.object({
+    javascript: z.string().min(1).optional(),
+    typescript: z.string().min(1).optional(),
+    python: z.string().min(1).optional(),
+    java: z.string().min(1).optional(),
+    cpp: z.string().min(1).optional(),
+  }),
+  expected: z.string().min(1),
+});
 
-export interface QuestionTestConfig {
-  functionName: string;
-  testCases: TestCase[];
-}
+export const questionTestConfigSchema = z.object({
+  functionName: z.string().min(1),
+  testCases: z.array(testCaseSchema).min(1),
+});
+
+export type TestCase = z.infer<typeof testCaseSchema>;
+export type QuestionTestConfig = z.infer<typeof questionTestConfigSchema>;
 
 export interface TestResult {
   passed: boolean;
@@ -23,9 +33,27 @@ export interface RunTestsResult {
   results: TestResult[];
   passedCount: number;
   totalCount: number;
+  configError?: string;
 }
 
 const MARKER = "===TEST_START===";
+
+/**
+ * Validates raw metadata (e.g. straight from Prisma's Json field) into a
+ * QuestionTestConfig, or returns null with an error message if invalid.
+ */
+export function parseTestConfig(
+  rawMetadata: unknown
+): { config: QuestionTestConfig | null; error: string | null } {
+  if (rawMetadata === null || rawMetadata === undefined) {
+    return { config: null, error: null }; // no test config configured — not an error, just ungraded
+  }
+  const result = questionTestConfigSchema.safeParse(rawMetadata);
+  if (!result.success) {
+    return { config: null, error: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") };
+  }
+  return { config: result.data, error: null };
+}
 
 export async function runMultiLanguageTests(
   code: string,
