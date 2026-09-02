@@ -14,6 +14,7 @@ export interface SessionUser {
   email: string;
   name: string;
   role: UserRole;
+  emailVerified: boolean;
 }
 
 export const COOKIE_NAME = "meetspace_session";
