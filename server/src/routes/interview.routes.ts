@@ -350,6 +350,17 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
     }
 
     const endedAt = new Date();
+        if (interview.currentQuestionId && interview.currentQuestionStartedAt) {
+      const secsSpent = Math.round(
+        (endedAt.getTime() - interview.currentQuestionStartedAt.getTime()) / 1000
+      );
+      if (secsSpent > 0) {
+        await prisma.interviewQuestion.updateMany({
+          where: { interviewId: id, questionId: interview.currentQuestionId },
+          data: { timeSpentSecs: { increment: secsSpent } },
+        });
+      }
+    }
     const timestampMs = interview.startedAt
       ? endedAt.getTime() - interview.startedAt.getTime()
       : 0;

@@ -47,6 +47,15 @@ enum EventType {
   HINT
 }
 
+enum FlagType {
+  STRONG_ANSWER
+  GOOD_INSIGHT
+  HINT_NEEDED
+  MISSED_EDGE_CASE
+  OPTIMIZATION_FOUND
+  COMMUNICATION_ISSUE
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -106,6 +115,9 @@ model Question {
   statement     String
   constraints   String?
   hints         String?
+  expectedApproach         String?
+  expectedTimeComplexity   String?
+  expectedSpaceComplexity  String?
   metadata      Json?
   interviewerId String
   createdAt     DateTime     @default(now())
@@ -128,6 +140,8 @@ model Interview {
   status       InterviewStatus @default(SCHEDULED)
   startedAt    DateTime?
   endedAt      DateTime?
+  currentQuestionId        String?
+  currentQuestionStartedAt DateTime?
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
@@ -152,7 +166,7 @@ model InterviewQuestion {
   workspaceData Json?
   notes         String?
   hintsUsed     Int     @default(0)
-  timeSpentSecs Int?
+  timeSpentSecs Int @default(0)
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
   question  Question  @relation(fields: [questionId], references: [id], onDelete: Restrict)
@@ -167,6 +181,7 @@ model InterviewEvent {
   questionId  String?
   timestampMs Int
   type        EventType
+  flagType    FlagType?
   payload     Json      @default("{}")
   createdAt   DateTime  @default(now())
 

@@ -32,6 +32,15 @@ const rooms = new Map<string, RoomData>();
 const ROOM_STATE_DEBOUNCE_MS = 3000;
 const pendingWrites = new Map<string, NodeJS.Timeout>();
 
+const VALID_FLAG_TYPES = [
+  "STRONG_ANSWER",
+  "GOOD_INSIGHT",
+  "HINT_NEEDED",
+  "MISSED_EDGE_CASE",
+  "OPTIMIZATION_FOUND",
+  "COMMUNICATION_ISSUE",
+];
+
 function getRoom(interviewId: string): RoomData {
   if (!rooms.has(interviewId)) {
     rooms.set(interviewId, {
@@ -124,7 +133,8 @@ async function persistInterviewEvent(
   type: string,
   timestampMs: number,
   payload: Record<string, unknown>,
-  questionId?: string
+  questionId?: string,
+  flagType?: string
 ) {
   try {
     await prisma.interviewEvent.create({
@@ -132,12 +142,47 @@ async function persistInterviewEvent(
         interviewId,
         questionId: questionId ?? null,
         type: type as any,
+        flagType: (flagType as any) ?? null,
         timestampMs,
         payload: payload as Prisma.InputJsonValue,
       },
     });
   } catch (err) {
     console.error(`Failed to persist event ${type} for interview ${interviewId}:`, err);
+  }
+}
+
+async function updateQuestionTimeSpent(
+  interviewId: string,
+  questionId: string,
+  additionalSecs: number
+) {
+  if (additionalSecs <= 0) return;
+  try {
+    await prisma.interviewQuestion.updateMany({
+      where: { interviewId, questionId },
+      data: { timeSpentSecs: { increment: additionalSecs } },
+    });
+  } catch (err) {
+    console.error(
+      `Failed to update timeSpentSecs for interview ${interviewId}, question ${questionId}:`,
+      err
+    );
+  }
+}
+
+async function setCurrentQuestion(
+  interviewId: string,
+  questionId: string | null,
+  startedAt: Date | null
+) {
+  try {
+    await prisma.interview.update({
+      where: { id: interviewId },
+      data: { currentQuestionId: questionId, currentQuestionStartedAt: startedAt },
+    });
+  } catch (err) {
+    console.error(`Failed to update current question for interview ${interviewId}:`, err);
   }
 }
 
@@ -268,11 +313,11 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       });
     });
 
-    socket.on("record-event", ({ type, questionId, payload }) => {
+        socket.on("record-event", ({ type, questionId, payload }) => {
       const { interviewId, userId } = getSocketRoomData(socket);
       if (!interviewId || !userId || !type) return;
 
-      const allowedTypes = ["HINT", "FLAG", "NOTE", "TRANSCRIPT", "SQL_QUERY"];
+      const allowedTypes = ["HINT", "NOTE", "TRANSCRIPT", "SQL_QUERY"];
       if (!allowedTypes.includes(type)) return;
 
       const room = getRoom(interviewId);
@@ -281,6 +326,26 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       persistInterviewEvent(interviewId, type, Date.now() - room.startedAt, fullPayload, questionId);
 
       socket.to(interviewId).emit("event-recorded", { type, questionId, payload: fullPayload });
+    });
+
+    socket.on("flag-event", ({ flagType, questionId, note }) => {
+      const { interviewId, userId, isInterviewer } = getSocketRoomData(socket);
+      if (!interviewId || !userId || !isInterviewer) return;
+      if (!flagType || !VALID_FLAG_TYPES.includes(flagType)) return;
+
+      const room = getRoom(interviewId);
+      const fullPayload = { userId, note: note ?? null };
+
+      persistInterviewEvent(
+        interviewId,
+        "FLAG",
+        Date.now() - room.startedAt,
+        fullPayload,
+        questionId,
+        flagType
+      );
+
+      socket.to(interviewId).emit("flag-recorded", { flagType, questionId, payload: fullPayload });
     });
 
     socket.on("question-switch", ({ questionIdx, questionId, title }) => {
@@ -303,7 +368,7 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
         questionId
       );
 
-      if (previousQuestion) {
+            if (previousQuestion) {
         const finalCode = room.state[`code-${previousQuestion.questionId}`];
         persistInterviewEvent(
           data.interviewId,
@@ -312,7 +377,12 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
           { title: previousQuestion.title, finalState: finalCode ?? null },
           previousQuestion.questionId
         );
+
+        const secsSpent = Math.round((Date.now() - previousQuestion.ts) / 1000);
+        updateQuestionTimeSpent(data.interviewId, previousQuestion.questionId, secsSpent);
       }
+
+        setCurrentQuestion(data.interviewId, questionId, new Date());
     });
 
     socket.on("disconnect", () => {
