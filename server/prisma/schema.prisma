@@ -152,6 +152,7 @@ model Interview {
   events     InterviewEvent[]
   report     InterviewReport?
   roomStates RoomState[]
+  minuteSnapshots MinuteSnapshot[]
 
   @@index([candidateId])
   @@index([positionId])
@@ -190,6 +191,23 @@ model InterviewEvent {
 
   @@index([interviewId, timestampMs])
   @@index([interviewId, type])
+}
+
+model MinuteSnapshot {
+  id            String   @id @default(cuid())
+  interviewId   String
+  minuteNumber  Int
+  transcriptText String?
+  codeSnapshot  String?
+  questionId    String?
+  flags         Json?
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@unique([interviewId, minuteNumber])
+  @@index([interviewId])
 }
 
 model InterviewReport {

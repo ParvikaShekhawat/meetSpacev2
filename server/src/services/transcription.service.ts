@@ -2,6 +2,7 @@ import { S3Client, HeadObjectCommand, GetObjectCommand } from "@aws-sdk/client-s
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { config } from "../config/env";
 import { prisma } from "../lib/prisma";
+import { generateMinuteSnapshots } from "./minute-snapshot.service";
 
 function getS3Client(): S3Client {
   return new S3Client({
@@ -24,7 +25,8 @@ async function waitForRecordingFile(
   const s3 = getS3Client();
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      await s3.send(new HeadObjectCommand({ Bucket: config.backblaze.bucketName, Key: key }));
+      const head = await s3.send(new HeadObjectCommand({ Bucket: config.backblaze.bucketName, Key: key }));
+      console.log(`Recording file found: ${head.ContentLength} bytes`);
       return true;
     } catch {
       await new Promise((r) => setTimeout(r, delayMs));
@@ -135,4 +137,11 @@ export async function processInterviewTranscript(interviewId: string): Promise<v
   }
 
   console.log(`Transcription complete for interview ${interviewId}`);
+
+  console.log(`Generating minute snapshots for interview ${interviewId}...`);
+  try {
+    await generateMinuteSnapshots(interviewId);
+  } catch (err) {
+    console.error(`Failed to generate minute snapshots for interview ${interviewId}:`, err);
+  }
 }

@@ -85,7 +85,8 @@ function scheduleRoomStateWrite(
   interviewId: string,
   questionId: string,
   updatedBy: string,
-  fields: { code?: string; workspaceData?: unknown; language?: string }
+  fields: { code?: string; workspaceData?: unknown; language?: string },
+  roomStartedAt: number
 ) {
   const key = `${interviewId}:${questionId}`;
   const existingTimer = pendingWrites.get(key);
@@ -118,6 +119,19 @@ function scheduleRoomStateWrite(
           version: { increment: 1 },
         },
       });
+
+      // Log a lightweight timestamped history event so later analysis (minute
+      // snapshots, code evolution) can reconstruct code at any point in time —
+      // RoomState alone only ever holds the latest value, with no history.
+      if (fields.code !== undefined) {
+        await persistInterviewEvent(
+          interviewId,
+          "CODE_CHANGE",
+          Date.now() - roomStartedAt,
+          { code: fields.code, language: fields.language ?? "javascript" },
+          questionId
+        );
+      }
     } catch (err) {
       console.error(`Failed to persist room state for ${key}:`, err);
     }
@@ -297,7 +311,7 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       room.state[`code-${questionId}`] = { code, language, updatedBy: userId, ts: Date.now() };
 
       socket.to(interviewId).emit("code-update", { questionId, code, language, userId });
-      scheduleRoomStateWrite(interviewId, questionId, userId, { code, language });
+        scheduleRoomStateWrite(interviewId, questionId, userId, { code, language }, room.startedAt);
     });
 
     socket.on("whiteboard-update", ({ questionId, elements, notes, strokes }) => {
@@ -308,9 +322,9 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
       room.state[`wb-${questionId}`] = { elements, notes, strokes, updatedBy: userId, ts: Date.now() };
 
       socket.to(interviewId).emit("whiteboard-update", { questionId, elements, notes, strokes, userId });
-      scheduleRoomStateWrite(interviewId, questionId, userId, {
+            scheduleRoomStateWrite(interviewId, questionId, userId, {
         workspaceData: { elements, notes, strokes },
-      });
+      }, room.startedAt);
     });
 
         socket.on("record-event", ({ type, questionId, payload }) => {
