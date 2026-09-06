@@ -62,6 +62,16 @@ export const config = {
     pass: process.env.SMTP_PASS || "",
     from: process.env.SMTP_FROM || "no-reply@meetspace.com",
   },
+  backblaze: {
+    bucketName: process.env.B2_BUCKET_NAME || "",
+    endpoint: process.env.B2_ENDPOINT || "",
+    region: process.env.B2_REGION || "",
+    accessKeyId: process.env.B2_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.B2_SECRET_ACCESS_KEY || "",
+  },
+  assemblyai: {
+    apiKey: process.env.ASSEMBLYAI_API_KEY || "",
+  },
 };
 
 // Fail fast in production if a service that's actually used has partial/missing config.
@@ -76,6 +86,11 @@ if (process.env.NODE_ENV === "production") {
   const smtpPartial =
     (config.smtp.host || config.smtp.user) && !(config.smtp.host && config.smtp.user && config.smtp.pass);
   if (smtpPartial) missing.push("SMTP_HOST / SMTP_USER / SMTP_PASS (set all three or none)");
+
+  const backblazePartial =
+    (config.backblaze.bucketName || config.backblaze.accessKeyId) &&
+    !(config.backblaze.bucketName && config.backblaze.endpoint && config.backblaze.region && config.backblaze.accessKeyId && config.backblaze.secretAccessKey);
+  if (backblazePartial) missing.push("B2_BUCKET_NAME / B2_ENDPOINT / B2_REGION / B2_ACCESS_KEY_ID / B2_SECRET_ACCESS_KEY (set all five or none)");
 
   if (config.pistonUrl.includes("emkc.org")) {
     console.warn(

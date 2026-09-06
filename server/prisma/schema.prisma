@@ -142,6 +142,7 @@ model Interview {
   endedAt      DateTime?
   currentQuestionId        String?
   currentQuestionStartedAt DateTime?
+  currentEgressId          String?
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 

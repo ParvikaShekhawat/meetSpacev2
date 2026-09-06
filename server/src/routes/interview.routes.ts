@@ -3,6 +3,8 @@ import { prisma } from "../lib/prisma";
 import { generateInterviewCode } from "../lib/interview-code";
 import { authenticate, requireRole, AuthenticatedRequest } from "../middleware/auth.middleware";
 import { generateReportWithAI } from "../services/openai.service";
+import { startRoomRecording, stopRoomRecording, isLiveKitConfigured } from "../services/livekit.service";
+import { processInterviewTranscript } from "../services/transcription.service";
 
 const router = Router();
 
@@ -309,10 +311,22 @@ router.post("/:id/start", requireRole("INTERVIEWER"), async (req: AuthenticatedR
 
     const startedAt = new Date();
 
+    // Best-effort: if LiveKit/recording isn't configured or Egress fails to start,
+    // the interview should still proceed — recording is an enhancement, not a blocker.
+    let egressId: string | null = null;
+    if (isLiveKitConfigured()) {
+      try {
+        const roomName = `interview-${id}`;
+        egressId = await startRoomRecording(roomName);
+      } catch (egressError) {
+        console.error("Failed to start recording, continuing without it:", egressError);
+      }
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       const updatedInterview = await tx.interview.update({
         where: { id },
-        data: { status: "IN_PROGRESS", startedAt },
+        data: { status: "IN_PROGRESS", startedAt, currentEgressId: egressId },
       });
 
       await tx.interviewEvent.create({
@@ -347,6 +361,21 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
     }
     if (interview.status !== "IN_PROGRESS") {
       return res.status(400).json({ error: `Cannot end an interview with status ${interview.status}` });
+    }
+
+    
+    if (interview.currentEgressId) {
+      try {
+        await stopRoomRecording(interview.currentEgressId);
+        // Fire-and-forget: transcription takes several minutes (waiting for upload +
+        // AssemblyAI processing), so it must not block this request/response.
+        // Errors inside are already logged internally by processInterviewTranscript.
+        processInterviewTranscript(id).catch((err) =>
+          console.error(`Background transcription failed for interview ${id}:`, err)
+        );
+      } catch (egressError) {
+        console.error("Failed to stop recording:", egressError);
+      }
     }
 
     const endedAt = new Date();
