@@ -37,6 +37,28 @@ export interface GeneratedAnalysis {
     label: string;
     observation: string;
   }>;
+  questionAnalysis: Array<{
+    questionTitle: string;
+    expectedApproach: string;
+    candidateApproach: string;
+    expectedTimeComplexity: string;
+    candidateTimeComplexity: string;
+    expectedSpaceComplexity: string;
+    candidateSpaceComplexity: string;
+    verdict: string;
+  }>;
+  codeEvolution: {
+    summary: string;
+    bugs: string;
+    optimization: string;
+    readability: string;
+  };
+  communicationAnalysis: Array<{
+    metric: string;
+    score: number;
+    evidence: string;
+  }>;
+  risks: string;
   sectionWiseFeedback?: string;
   candidateBetterApproach?: string;
 }
@@ -157,6 +179,35 @@ export function generateHeuristicAnalysis(
       observation: e.payload?.text || e.payload?.flag || "Notable moment recorded",
     }));
 
+  const questionAnalysis = questions.map((q) => ({
+    questionTitle: q.title,
+    expectedApproach: "Not available in heuristic mode — requires AI analysis",
+    candidateApproach: q.finalCode ? "Solution submitted — see final code" : "No solution submitted",
+    expectedTimeComplexity: "N/A",
+    candidateTimeComplexity: "N/A",
+    expectedSpaceComplexity: "N/A",
+    candidateSpaceComplexity: "N/A",
+    verdict: q.finalCode ? "Completed" : "Incomplete",
+  }));
+
+  const codeEvolution = {
+    summary: codeChanges.length > 0
+      ? `Code went through ${codeChanges.length} revision(s) during the session.`
+      : "No code revision history available.",
+    bugs: "Not available in heuristic mode — requires AI analysis",
+    optimization: "Not available in heuristic mode — requires AI analysis",
+    readability: "Not available in heuristic mode — requires AI analysis",
+  };
+
+  const communicationAnalysis = [
+    { metric: "Clarity", score: communicationScore, evidence: `${notes.length} timeline notes recorded` },
+    { metric: "Confidence", score: communicationScore, evidence: "Derived from overall session flags" },
+  ];
+
+  const risks = negativeFlags.length > 0
+    ? "Some concerns were flagged during the session — review timeline for details."
+    : "No significant risks identified.";
+
   return {
     overallScore: score,
     aiSummary,
@@ -169,6 +220,10 @@ export function generateHeuristicAnalysis(
     competencyScores,
     learningPlan,
     timelineHighlights,
+    questionAnalysis,
+    codeEvolution,
+    communicationAnalysis,
+    risks,
     sectionWiseFeedback: "1. Setup: Good\n2. Implementation: Solid\n3. Edge Cases: Needs Work",
     candidateBetterApproach: "Review optimal hash map lookups to achieve O(N) linear time complexity.",
   };
@@ -242,6 +297,57 @@ function coerceTimelineHighlights(
   return cleaned.length > 0 ? cleaned : fallback;
 }
 
+function coerceQuestionAnalysis(
+  value: unknown,
+  fallback: GeneratedAnalysis["questionAnalysis"]
+): GeneratedAnalysis["questionAnalysis"] {
+  if (!Array.isArray(value)) return fallback;
+  const cleaned = value
+    .filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null)
+    .map((v) => ({
+      questionTitle: asString(v.questionTitle, ""),
+      expectedApproach: asString(v.expectedApproach, ""),
+      candidateApproach: asString(v.candidateApproach, ""),
+      expectedTimeComplexity: asString(v.expectedTimeComplexity, "N/A"),
+      candidateTimeComplexity: asString(v.candidateTimeComplexity, "N/A"),
+      expectedSpaceComplexity: asString(v.expectedSpaceComplexity, "N/A"),
+      candidateSpaceComplexity: asString(v.candidateSpaceComplexity, "N/A"),
+      verdict: asString(v.verdict, "Unknown"),
+    }))
+    .filter((v) => v.questionTitle.length > 0);
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
+function coerceCodeEvolution(
+  value: unknown,
+  fallback: GeneratedAnalysis["codeEvolution"]
+): GeneratedAnalysis["codeEvolution"] {
+  if (typeof value !== "object" || value === null) return fallback;
+  const v = value as Record<string, unknown>;
+  return {
+    summary: asString(v.summary, fallback.summary),
+    bugs: asString(v.bugs, fallback.bugs),
+    optimization: asString(v.optimization, fallback.optimization),
+    readability: asString(v.readability, fallback.readability),
+  };
+}
+
+function coerceCommunicationAnalysis(
+  value: unknown,
+  fallback: GeneratedAnalysis["communicationAnalysis"]
+): GeneratedAnalysis["communicationAnalysis"] {
+  if (!Array.isArray(value)) return fallback;
+  const cleaned = value
+    .filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null)
+    .map((v) => ({
+      metric: asString(v.metric, ""),
+      score: clamp(asFiniteNumber(v.score, -1), 0, 10),
+      evidence: asString(v.evidence, ""),
+    }))
+    .filter((v) => v.metric.length > 0 && v.score >= 0);
+  return cleaned.length > 0 ? cleaned : fallback;
+}
+
 function coerceAnalysis(
   parsed: Record<string, unknown>,
   fallback: GeneratedAnalysis
@@ -271,6 +377,10 @@ function coerceAnalysis(
     competencyScores: coerceCompetencyScores(parsed.competencyScores, fallback.competencyScores),
     learningPlan: coerceLearningPlan(parsed.learningPlan, fallback.learningPlan),
     timelineHighlights: coerceTimelineHighlights(parsed.timelineHighlights, fallback.timelineHighlights),
+    questionAnalysis: coerceQuestionAnalysis(parsed.questionAnalysis, fallback.questionAnalysis),
+    codeEvolution: coerceCodeEvolution(parsed.codeEvolution, fallback.codeEvolution),
+    communicationAnalysis: coerceCommunicationAnalysis(parsed.communicationAnalysis, fallback.communicationAnalysis),
+    risks: asString(parsed.risks, fallback.risks),
     sectionWiseFeedback: asString(parsed.sectionWiseFeedback, fallback.sectionWiseFeedback ?? ""),
     candidateBetterApproach: asString(parsed.candidateBetterApproach, fallback.candidateBetterApproach ?? ""),
   };
@@ -291,6 +401,10 @@ const SCHEMA_DESCRIPTION = `Respond with ONLY a single valid JSON object (no mar
   "competencyScores": array of { "name": string, "score": number (0-10), "evidence": string },
   "learningPlan": array of { "topic": string, "priority": "High" | "Medium" | "Low", "action": string, "hours": number },
   "timelineHighlights": array of { "timestampMs": number, "label": string, "observation": string } (up to 12 items),
+  "questionAnalysis": array, one entry per question, of { "questionTitle": string, "expectedApproach": string (the ideal/expected way to solve it), "candidateApproach": string (what the candidate actually did, based on their code/discussion), "expectedTimeComplexity": string (e.g. "O(n)"), "candidateTimeComplexity": string, "expectedSpaceComplexity": string, "candidateSpaceComplexity": string, "verdict": string (e.g. "Optimal", "Suboptimal but correct", "Incorrect", "Incomplete") },
+  "codeEvolution": { "summary": string (how the code changed over the session), "bugs": string (any bugs observed, or "None observed"), "optimization": string (optimization opportunities, or "None needed"), "readability": string (readability assessment) },
+  "communicationAnalysis": array of { "metric": string (one of "Clarity", "Confidence", "Requirement Gathering", "Technical Explanation"), "score": number (0-10), "evidence": string (specific evidence from the timeline/transcript) },
+  "risks": string (any concerns or risks for making a hiring decision, or "No significant risks identified"),
   "sectionWiseFeedback": string (optional, short section-by-section notes),
   "candidateBetterApproach": string (optional, a better approach the candidate could have taken)
 }

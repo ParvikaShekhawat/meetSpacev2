@@ -243,6 +243,7 @@ model InterviewReport {
   interviewerNotes    String?
   interviewerDecision String?
   finalComments       String?
+  risks                String?
 
   // AI's own recommendation, separate from interviewer's final call
   aiRecommendation String  @default("Hire")

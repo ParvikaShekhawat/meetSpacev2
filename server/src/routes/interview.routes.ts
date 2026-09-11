@@ -242,6 +242,10 @@ router.get("/:id/report", async (req: AuthenticatedRequest, res: Response) => {
       learningPlan: iv.report.learningPlanData ?? [],
       candidateBetterApproach: isCandidate ? iv.report.candidateBetterApproach : null,
       aiGenerated: iv.report.aiGenerated,
+      questionAnalysis: iv.report.questionAnalysis ?? [],
+      codeEvolution: iv.report.codeEvolution ?? null,
+      communicationAnalysis: iv.report.communicationAnalysis ?? [],
+      risks: isInterviewer ? iv.report.risks : null,
       questions: iv.questions.map((iq: any) => ({
         id: iq.id,
         questionRefId: iq.questionId,
@@ -466,6 +470,10 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
             learningPlanData: analysis.learningPlan,
             candidateBetterApproach: analysis.candidateBetterApproach,
             aiGenerated: analysis.aiGenerated,
+            questionAnalysis: analysis.questionAnalysis,
+            codeEvolution: analysis.codeEvolution,
+            communicationAnalysis: analysis.communicationAnalysis,
+            risks: analysis.risks,
             interviewerNotes: "",
           },
           update: {
@@ -481,6 +489,10 @@ router.post("/:id/end", requireRole("INTERVIEWER"), async (req: AuthenticatedReq
             learningPlanData: analysis.learningPlan,
             candidateBetterApproach: analysis.candidateBetterApproach,
             aiGenerated: analysis.aiGenerated,
+            questionAnalysis: analysis.questionAnalysis,
+            codeEvolution: analysis.codeEvolution,
+            communicationAnalysis: analysis.communicationAnalysis,
+            risks: analysis.risks,
           },
         });
       }

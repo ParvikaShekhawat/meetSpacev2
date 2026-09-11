@@ -16,11 +16,7 @@ async function main() {
     ],
   });
 
-  console.log("aiGenerated:", result.aiGenerated);
-  console.log("overallScore:", result.overallScore);
-  console.log("aiSummary:", result.aiSummary);
-  console.log("recommendation:", result.recommendation);
-  console.log("competencyScores:", JSON.stringify(result.competencyScores, null, 2));
+  console.log(JSON.stringify(result, null, 2));
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
