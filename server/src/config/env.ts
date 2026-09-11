@@ -54,6 +54,11 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY || "",
     model: process.env.OPENAI_MODEL || "gpt-4o-mini",
   },
+
+    groq: {
+    apiKey: process.env.GROQ_API_KEY || "",
+    model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
+  },
   smtp: {
     host: process.env.SMTP_HOST || "",
     port: parseInt(process.env.SMTP_PORT || "587", 10),

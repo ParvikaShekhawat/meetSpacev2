@@ -296,36 +296,20 @@ const SCHEMA_DESCRIPTION = `Respond with ONLY a single valid JSON object (no mar
 }
 All fields are required except sectionWiseFeedback and candidateBetterApproach. Do not omit any required field.`;
 
-export async function generateReportWithAI(
-  context: ReportContext
-): Promise<GeneratedAnalysis & { aiGenerated: boolean }> {
-  const fallback = generateHeuristicAnalysis(
-    context.events,
-    context.questions,
-    context.durationMins
-  );
+function buildPrompt(context: ReportContext): string {
+  const timelineText = context.events
+    .slice(0, 30)
+    .map((e) => {
+      const detail = e.payload?.text || e.payload?.flag || "";
+      return `[${Math.floor(e.timestampMs / 1000)}s] ${e.type}: ${detail}`;
+    })
+    .join("\n");
 
-  if (!config.openai.apiKey) {
-    return { ...fallback, aiGenerated: false };
-  }
+  const questionsText = context.questions
+    .map((q) => `- ${q.title} (${q.type}): ${q.finalCode ? "code submitted" : "no code"}`)
+    .join("\n");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
-
-  try {
-    const timelineText = context.events
-      .slice(0, 30)
-      .map((e) => {
-        const detail = e.payload?.text || e.payload?.flag || "";
-        return `[${Math.floor(e.timestampMs / 1000)}s] ${e.type}: ${detail}`;
-      })
-      .join("\n");
-
-    const questionsText = context.questions
-      .map((q) => `- ${q.title} (${q.type}): ${q.finalCode ? "code submitted" : "no code"}`)
-      .join("\n");
-
-    const prompt = `Analyze this technical interview.
+  return `Analyze this technical interview.
 
 Candidate: ${context.candidateName}
 Position: ${context.positionTitle}
@@ -343,15 +327,26 @@ ${timelineText}
 ---
 
 ${SCHEMA_DESCRIPTION}`;
+}
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+async function callChatCompletionApi(
+  apiUrl: string,
+  apiKey: string,
+  model: string,
+  prompt: string
+): Promise<Record<string, unknown>> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.openai.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.openai.model,
+            body: JSON.stringify({
+        model,
         messages: [
           {
             role: "system",
@@ -360,34 +355,80 @@ ${SCHEMA_DESCRIPTION}`;
           },
           { role: "user", content: prompt },
         ],
-        temperature: 0.3,
+        temperature: 0.2,
         max_tokens: 1500,
-        response_format: { type: "json_object" },
+        reasoning_effort: "none",
       }),
       signal: controller.signal,
     });
 
-    if (!res.ok) {
-      throw new Error(`OpenAI API error: ${res.status}`);
+        if (!res.ok) {
+      const errorBody = await res.text();
+      throw new Error(`API error: ${res.status} - ${errorBody}`);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data = (await res.json()) as any;
     const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty OpenAI response");
+    if (!content) throw new Error("Empty response");
 
-    const parsed = JSON.parse(content) as Record<string, unknown>;
-    const coerced = coerceAnalysis(parsed, fallback);
-
-    return { ...coerced, aiGenerated: true };
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      console.error("OpenAI report timed out after", OPENAI_TIMEOUT_MS, "ms, using heuristic");
-    } else {
-      console.error("OpenAI report failed, using heuristic:", err);
+    // Reasoning models (like Qwen's "thinking" variants) prepend their internal
+    // chain-of-thought wrapped in <think>...</think> before the actual answer —
+    // strip that out before parsing, since it isn't valid JSON.
+    const jsonStart = content.indexOf("{");
+    const jsonEnd = content.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1 || jsonEnd < jsonStart) {
+      throw new Error("No JSON object found in model response");
     }
-    return { ...fallback, aiGenerated: false };
+    const jsonOnly = content.slice(jsonStart, jsonEnd + 1);
+
+    return JSON.parse(jsonOnly) as Record<string, unknown>;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function generateReportWithAI(
+  context: ReportContext
+): Promise<GeneratedAnalysis & { aiGenerated: boolean }> {
+  const fallback = generateHeuristicAnalysis(
+    context.events,
+    context.questions,
+    context.durationMins
+  );
+
+  const prompt = buildPrompt(context);
+
+  // Try Groq first (free tier, no billing required), then OpenAI if configured,
+  // then fall back to the heuristic analysis. Each provider's failure is logged
+  // but never thrown — the interview must still complete even with no AI available.
+  if (config.groq.apiKey) {
+    try {
+      const parsed = await callChatCompletionApi(
+        "https://api.groq.com/openai/v1/chat/completions",
+        config.groq.apiKey,
+        config.groq.model,
+        prompt
+      );
+      return { ...coerceAnalysis(parsed, fallback), aiGenerated: true };
+    } catch (err) {
+      console.error("Groq report generation failed, trying next provider:", err);
+    }
+  }
+
+  if (config.openai.apiKey) {
+    try {
+      const parsed = await callChatCompletionApi(
+        "https://api.openai.com/v1/chat/completions",
+        config.openai.apiKey,
+        config.openai.model,
+        prompt
+      );
+      return { ...coerceAnalysis(parsed, fallback), aiGenerated: true };
+    } catch (err) {
+      console.error("OpenAI report generation failed, using heuristic:", err);
+    }
+  }
+
+  return { ...fallback, aiGenerated: false };
 }
